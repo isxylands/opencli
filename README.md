@@ -7,7 +7,7 @@
 
 [![npm](https://img.shields.io/npm/v/@jackwener/opencli)](https://www.npmjs.com/package/@jackwener/opencli)
 
-A CLI tool that turns **any website** into a command-line interface. **46 commands** across **17 sites** — bilibili, zhihu, xiaohongshu, twitter, reddit, xueqiu, github, v2ex, hackernews, bbc, weibo, boss, yahoo-finance, reuters, smzdm, ctrip, youtube — powered by browser session reuse and AI-native discovery.
+A CLI tool that turns **any website** into a command-line interface. **47 commands** across **17 sites** — bilibili, zhihu, xiaohongshu, twitter, reddit, xueqiu, github, v2ex, hackernews, bbc, weibo, boss, yahoo-finance, reuters, smzdm, ctrip, youtube — powered by browser session reuse and AI-native discovery.
 
 ## ✨ Highlights
 
@@ -82,7 +82,7 @@ Public API commands (`hackernews`, `github search`, `v2ex`) need no browser at a
 
 | Site | Commands | Mode |
 |------|----------|------|
-| **bilibili** | `hot` `search` `me` `favorite` `history` `feed` `user-videos` `subtitle` `dynamic` `ranking` | 🔐 Browser |
+| **bilibili** | `hot` `search` `me` `favorite` `history` `feed` `user-videos` `subtitle` `dynamic` `ranking` `following` | 🔐 Browser |
 | **zhihu** | `hot` `search` `question` | 🔐 Browser |
 | **xiaohongshu** | `search` `notifications` `feed` `me` `user` | 🔐 Browser |
 | **xueqiu** | `feed` `hot-stock` `hot` `search` `stock` `watchlist` | 🔐 Browser |
@@ -95,7 +95,7 @@ Public API commands (`hackernews`, `github search`, `v2ex`) need no browser at a
 | **reuters** | `search` | 🔐 Browser |
 | **smzdm** | `search` | 🔐 Browser |
 | **ctrip** | `search` | 🔐 Browser |
-| **github** | `trending` `search` | 🔐 / 🌐 |
+| **github** | `search` | 🌐 Public |
 | **v2ex** | `hot` `latest` `topic` | 🌐 Public |
 | **hackernews** | `top` | 🌐 Public |
 | **bbc** | `news` | 🌐 Public |

@@ -52,6 +52,7 @@ opencli bilibili user-videos --uid 12345  # 用户投稿
 opencli bilibili subtitle --bvid BV1xxx   # 获取视频字幕 (支持 --lang zh-CN)
 opencli bilibili dynamic --limit 10       # 动态
 opencli bilibili ranking --limit 10       # 排行榜
+opencli bilibili following --limit 20     # 我的关注列表 (支持 --uid 查看他人)
 
 # 知乎 (browser)
 opencli zhihu hot --limit 10             # 知乎热榜
@@ -70,9 +71,10 @@ opencli xueqiu hot-stock --limit 10      # 雪球热门股票榜
 opencli xueqiu stock --symbol SH600519   # 查看股票实时行情
 opencli xueqiu watchlist                 # 获取自选股/持仓列表
 opencli xueqiu feed                      # 我的关注 timeline
+opencli xueqiu hot --limit 10            # 雪球热榜
+opencli xueqiu search --keyword "特斯拉"  # 搜索
 
-# GitHub (trending=browser, search=public)
-opencli github trending --limit 10       # GitHub Trending
+# GitHub (public)
 opencli github search --keyword "cli"    # 搜索仓库
 
 # Twitter/X (browser)
