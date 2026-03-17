@@ -134,6 +134,9 @@ opencli boss search --query "AI agent"  # 搜索职位
 
 # YouTube (browser)
 opencli youtube search --query "rust"   # 搜索视频
+opencli youtube video --url "https://www.youtube.com/watch?v=xxx"  # 视频元数据（标题、播放量、描述等）
+opencli youtube transcript --url "https://www.youtube.com/watch?v=xxx"  # 获取视频字幕/转录
+opencli youtube transcript --url "xxx" --lang zh-Hans --mode raw  # 指定语言 + 原始时间戳模式
 
 # Yahoo Finance (browser)
 opencli yahoo-finance quote --symbol AAPL  # 股票行情

@@ -141,7 +141,7 @@ npm install -g @jackwener/opencli@latest
 | **weibo** | `hot` | 🔐 Browser |
 | **boss** | `search` `detail` | 🔐 Browser |
 | **coupang** | `search` `add-to-cart` | 🔐 Browser |
-| **youtube** | `search` | 🔐 Browser |
+| **youtube** | `search` `video` `transcript` | 🔐 Browser |
 | **linkedin** | `search` | 🔐 Browser |
 | **yahoo-finance** | `quote` | 🔐 Browser |
 | **reuters** | `search` | 🔐 Browser |
