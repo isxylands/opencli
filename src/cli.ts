@@ -21,6 +21,8 @@ export function runCli(BUILTIN_CLIS: string, USER_CLIS: string): void {
     .action((opts) => {
       const registry = getRegistry();
       const commands = [...registry.values()].sort((a, b) => fullName(a).localeCompare(fullName(b)));
+      const fmt = opts.json && opts.format === 'table' ? 'json' : opts.format;
+      const isStructured = fmt === 'json' || fmt === 'yaml';
       const rows = commands.map(c => ({
         command: fullName(c),
         site: c.site,
@@ -28,13 +30,25 @@ export function runCli(BUILTIN_CLIS: string, USER_CLIS: string): void {
         description: c.description,
         strategy: strategyLabel(c),
         browser: c.browser,
-        args: c.args.map(a => a.name).join(', '),
+        // Structured formats get full arg schema; table/csv/md get comma-joined names
+        args: isStructured
+          ? c.args.map(a => {
+              const arg: Record<string, unknown> = { name: a.name };
+              if (a.type) arg.type = a.type;
+              if (a.required) arg.required = true;
+              if (a.positional) arg.positional = true;
+              if (a.choices?.length) arg.choices = a.choices;
+              if (a.default != null) arg.default = a.default;
+              if (a.help) arg.help = a.help;
+              return arg;
+            })
+          : c.args.map(a => a.name).join(', '),
+        ...(isStructured ? { columns: c.columns ?? [], domain: c.domain ?? null } : {}),
       }));
-      const fmt = opts.json && opts.format === 'table' ? 'json' : opts.format;
       if (fmt !== 'table') {
         renderOutput(rows, {
           fmt,
-          columns: ['command', 'site', 'name', 'description', 'strategy', 'browser', 'args'],
+          columns: ['command', 'site', 'name', 'description', 'strategy', 'browser', 'args', ...(isStructured ? ['columns', 'domain'] : [])],
           title: 'opencli/list',
           source: 'opencli list',
         });
@@ -205,6 +219,24 @@ export function runCli(BUILTIN_CLIS: string, USER_CLIS: string): void {
       }
     }
     subCmd.option('-f, --format <fmt>', 'Output format: table, json, yaml, md, csv', 'table').option('-v, --verbose', 'Debug output', false);
+
+    // Enhance --help with registry metadata not shown by Commander
+    const helpExtra: string[] = [];
+    const choicesArgs = cmd.args.filter(a => a.choices?.length);
+    if (choicesArgs.length > 0) {
+      for (const a of choicesArgs) {
+        const prefix = a.positional ? `<${a.name}>` : `--${a.name}`;
+        const def = a.default != null ? `  (default: ${a.default})` : '';
+        helpExtra.push(`  ${prefix}: ${a.choices!.join(', ')}${def}`);
+      }
+    }
+    const metaParts: string[] = [];
+    metaParts.push(`Strategy: ${strategyLabel(cmd)}`);
+    metaParts.push(`Browser: ${cmd.browser ? 'yes' : 'no'}`);
+    if (cmd.domain) metaParts.push(`Domain: ${cmd.domain}`);
+    helpExtra.push(metaParts.join(' | '));
+    if (cmd.columns?.length) helpExtra.push(`Output columns: ${cmd.columns.join(', ')}`);
+    subCmd.addHelpText('after', '\n' + helpExtra.join('\n') + '\n');
 
     subCmd.action(async (...actionArgs: any[]) => {
       // Commander passes positional args first, then options object, then the Command
