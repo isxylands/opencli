@@ -69,7 +69,7 @@ describe('deepseek ask --file', () => {
     expect(rows).toEqual([{ response: 'new reply' }]);
     expect(mockGetBubbleCount).toHaveBeenCalledTimes(1);
     expect(mockSendWithFile).toHaveBeenCalledWith(page, './report.pdf', 'summarize this');
-    expect(mockWaitForResponse).toHaveBeenCalledWith(page, 7, 'summarize this', 120000);
+    expect(mockWaitForResponse).toHaveBeenCalledWith(page, 7, 'summarize this', 120000, false);
   });
 
   it('still fails when explicit instant model selection cannot be verified', async () => {
@@ -83,5 +83,83 @@ describe('deepseek ask --file', () => {
       think: false,
       search: false,
     })).rejects.toThrow(new CommandExecutionError('Could not switch to instant model'));
+  });
+});
+
+describe('deepseek ask --think', () => {
+  const page = {
+    wait: vi.fn().mockResolvedValue(undefined),
+    goto: vi.fn().mockResolvedValue(undefined),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockEnsureOnDeepSeek.mockResolvedValue(undefined);
+    mockSelectModel.mockResolvedValue({ ok: true, toggled: false });
+    mockSetFeature.mockResolvedValue({ ok: true, toggled: false });
+    mockSendMessage.mockResolvedValue({ ok: true });
+    mockGetBubbleCount.mockResolvedValue(5);
+  });
+
+  it('returns separate thinking and response fields when --think is enabled', async () => {
+    mockWaitForResponse.mockResolvedValue({
+      response: 'The answer is 42.',
+      thinking: 'Let me analyze this...',
+      thinking_time: '2.5',
+    });
+
+    const rows = await askCommand.func(page, {
+      prompt: 'what is the answer?',
+      timeout: 120,
+      new: false,
+      model: 'instant',
+      think: true,
+      search: false,
+    });
+
+    expect(rows).toEqual([{
+      response: 'The answer is 42.',
+      thinking: 'Let me analyze this...',
+      thinking_time: '2.5',
+    }]);
+    expect(mockWaitForResponse).toHaveBeenCalledWith(page, 5, 'what is the answer?', 120000, true);
+  });
+
+  it('returns plain response when --think is disabled', async () => {
+    mockWaitForResponse.mockResolvedValue('The answer is 42.');
+
+    const rows = await askCommand.func(page, {
+      prompt: 'what is the answer?',
+      timeout: 120,
+      new: false,
+      model: 'instant',
+      think: false,
+      search: false,
+    });
+
+    expect(rows).toEqual([{ response: 'The answer is 42.' }]);
+    expect(mockWaitForResponse).toHaveBeenCalledWith(page, 5, 'what is the answer?', 120000, false);
+  });
+
+  it('does not declare static columns (derived from row keys)', () => {
+    // columns should be undefined so the renderer infers from row keys,
+    // avoiding empty trailing columns on non-think output.
+    expect(askCommand.columns).toBeUndefined();
+  });
+
+  it('non-think rows only contain response key', async () => {
+    mockWaitForResponse.mockResolvedValue('Plain answer.');
+
+    const rows = await askCommand.func(page, {
+      prompt: 'hello',
+      timeout: 120,
+      new: false,
+      model: 'instant',
+      think: false,
+      search: false,
+    });
+
+    // Row keys drive rendered columns; no thinking/thinking_time present.
+    expect(Object.keys(rows[0])).toEqual(['response']);
   });
 });
