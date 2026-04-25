@@ -886,3 +886,280 @@ AutoCLI 现有架构有 adapter、动态 CLI、browser pipeline、explore/synthe
 - 成功后输出可重放命令与可验证 adapter。
 
 但在当前未增强版本中，仍不能直接满足该完整目标。
+
+## 2026-04-25 补充：加强版实现形态、慢页面策略与 Fork 建议
+
+### 1. 是否可以自研 AutoCLI 加强版
+
+可以。从源码摸底看，AutoCLI 的动态 adapter、browser pipeline、YAML 命令注册、explore/synthesize 机制已经提供了一个不错的底座。加强版不是从零造 CLI，而是在现有能力上补齐四层：
+
+- 自然语言计划层：把用户含混指令解析成结构化 `NLPlan`。
+- 执行安全层：环境隔离、只读/写操作策略、数据脱敏、低置信度确认。
+- 浏览器可靠性层：等待策略、加载态识别、网络安静、DOM 稳定、重试与证据收集。
+- 生成验证层：成功执行后输出 replay command / adapter，并自动 dry-run 验证。
+
+但需要明确：这已经不是“AutoCLI 多加一个 AI 参数”级别的改造，而是一个面向内部系统巡检/操作的 agentic CLI。它可以复用 AutoCLI，但产品边界应定义为“可审计的网页操作与命令生成平台”，而不是“自然语言万能浏览器”。
+
+### 2. 含混自然语言不能原样转给大模型
+
+加强版不应该把用户原始话术直接转给 AI。更稳的链路应是：
+
+```text
+用户自然语言
+  -> 意图归一化与缺失项检测
+  -> Skill/站点知识注入
+  -> 最佳实践与安全策略注入
+  -> LLM 生成结构化计划
+  -> 本地 validator 修正/拒绝/追问
+  -> 浏览器执行器按确定性策略执行
+  -> 证据门禁后输出结论和 replay command
+```
+
+这里有一个关键原则：提示词可以告诉模型“要等页面加载完成”，但是否真的等够、是否还在转圈、是否可以判定没数据，必须由本地执行器验证，不能只靠模型自觉。
+
+### 3. 慢页面、加载态、误判空数据的组合方案
+
+这些方案不是互斥的，应按风险和场景组合使用。
+
+#### 方案 A：Prompt 注入最佳实践
+
+在发给 LLM 的 system/developer prompt 中内置通用网页操作规则：
+
+- 不要在页面主区域仍显示 loading/spinner/skeleton 时下结论。
+- 看到“暂无数据/没数据”时，先确认页面不再加载、接口已返回、表格区域稳定。
+- 慢页面要使用等待-复查循环，而不是一次 DOM 快照就判断。
+- 对空结果要区分“真实空数据”“仍在加载”“接口失败”“未登录/无权限”“筛选条件导致为空”。
+- 对含混指令要先补全或提问，不要猜测高风险动作。
+
+优点：成本低，能改善模型行为。
+
+缺点：不可靠。模型仍可能过早下结论，尤其是小模型、长上下文或页面状态复杂时。
+
+适用：低风险页面、只读摘要、生成初步计划。
+
+#### 方案 B：结构化计划与本地校验
+
+要求 LLM 只输出结构化计划，不直接执行判断：
+
+```json
+{
+  "target_env": "ci",
+  "target": "主机监控",
+  "readiness_policy": {
+    "max_wait_ms": 30000,
+    "network_quiet_ms": 1000,
+    "spinner_absent": true,
+    "dom_stable_samples": 2,
+    "empty_state_requires_ready": true
+  },
+  "ambiguities": [],
+  "actions": [
+    {"type": "navigate", "target": "#/devops/serverMonitor/chart"},
+    {"type": "wait_until_ready"},
+    {"type": "collect_table"},
+    {"type": "collect_network"},
+    {"type": "summarize"}
+  ]
+}
+```
+
+本地 validator 负责：
+
+- 缺少环境、目标、scope、depth 时补安全默认值或追问。
+- Stable/PRDemo 强制只读。
+- `empty_state_requires_ready=true` 作为硬规则。
+- 对写操作、删除、提交、确认类动作拒绝或要求显式确认。
+- 给每个页面动作补默认 wait/readiness 策略。
+
+优点：可审计、可测试、不会让模型绕过安全层。
+
+缺点：需要定义计划 schema、validator 和错误恢复逻辑。
+
+适用：加强版的默认核心方案。
+
+#### 方案 C：执行器内置页面就绪判断
+
+这是解决“页面还在转圈却返回没数据”的关键。浏览器执行器应提供统一的 `wait_until_ready`，而不是让模型自己 sleep。
+
+建议实现 `ReadinessPolicy`：
+
+```text
+initial_delay_ms
+max_wait_ms
+poll_interval_ms
+network_quiet_ms
+dom_stable_samples
+spinner_selectors
+skeleton_selectors
+main_region_selectors
+table_selectors
+empty_state_selectors
+required_text_or_selector
+min_rows
+```
+
+判定流程：
+
+1. 等待路由稳定：URL/hash 不再变化。
+2. 等待网络安静：CDP 记录的 XHR/fetch 在 `network_quiet_ms` 内没有新增或 pending。
+3. 等待加载态消失：spinner、loading 文案、skeleton、进度条不可见。
+4. 等待主区域稳定：主区域文本长度、表格行数、关键 DOM hash 连续 N 次采样不变。
+5. 若看到空状态，只能在 1-4 都满足后才允许输出“暂无数据”。
+6. 若超过超时仍未稳定，输出“页面加载未完成/疑似卡住”，而不是输出“没数据”。
+
+优点：最可靠，能系统性解决慢页面误判。
+
+缺点：需要 CDP 网络监控和一组通用/站点专用 selector；不同系统 loading 组件差异较大。
+
+适用：所有网页执行默认启用，内网管理系统必须启用。
+
+#### 方案 D：证据门禁与结论分级
+
+执行器输出结论前必须带证据：
+
+```json
+{
+  "claim": "主机列表暂无数据",
+  "confidence": 0.82,
+  "evidence": {
+    "ready": true,
+    "network_quiet": true,
+    "spinner_visible": false,
+    "empty_state_visible": true,
+    "table_rows": 0,
+    "api_status": 200,
+    "api_items_count": 0,
+    "screenshot": "..."
+  }
+}
+```
+
+如果证据不够，输出应降级：
+
+- `ready=false`：页面仍在加载，不能判定数据为空。
+- `network_error=true`：接口异常，不能判定业务无数据。
+- `login_detected=true`：未登录或登录态失效。
+- `permission_denied=true`：无权限，不等于无数据。
+- `filter_maybe_active=true`：筛选条件可能导致为空。
+
+优点：可解释，能防止模型把观察误当事实。
+
+缺点：输出结构更复杂，需要 UI/CLI 渲染上区分“事实、推断、风险”。
+
+适用：巡检报告、运维排障、自动生成命令前的验证。
+
+#### 方案 E：站点/Skill 专用 Recipe
+
+通用规则不够时，需要 Skill 或本地 recipe 提供站点特化知识。例如技术中台：
+
+```yaml
+site: techmp
+routes:
+  主机监控: "#/devops/serverMonitor/chart"
+readiness:
+  main_region: "#app"
+  spinner_text: ["加载中", "Loading"]
+  table_keywords: ["IP", "主机名", "CPU", "内存"]
+  expected_apis:
+    - "/devops/monitor/config/server/list"
+    - "/devops/monitor/host/quota/list"
+empty_state:
+  allowed_only_after:
+    - spinner_absent
+    - network_quiet
+    - expected_apis_resolved
+```
+
+优点：对内部系统最稳，能沉淀组织经验。
+
+缺点：需要维护 recipe，页面改版后要更新。
+
+适用：技术中台、CI/CD、监控系统、权限复杂的后台系统。
+
+#### 方案 F：低置信度追问与非交互默认策略
+
+用户自然语言含混时，不能一律猜。建议分两种运行模式：
+
+交互模式：
+
+- 缺少环境：问用户，或提示默认用 CI。
+- 缺少 scope：问是单页、模块还是全站。
+- 指令包含可能写操作：要求确认。
+- 目标匹配多个菜单：列出候选让用户选。
+
+非交互模式：
+
+- 默认 `target_env=ci`。
+- 默认 `inspect_scope=single`，如果能明确页面；否则只生成 plan 不执行。
+- 默认 `depth=shallow`，除非用户明确“深入/各项信息/排障”。
+- 默认 `allow_write_confirm=false`。
+- 低置信度时退出并返回需要补充的字段，而不是强行执行。
+
+优点：兼顾自动化和安全。
+
+缺点：会牺牲部分“一句话全自动”的体验。
+
+适用：CLI 产品必须支持，尤其适合 CI/CD 脚本场景。
+
+### 4. 推荐组合
+
+建议加强版采用以下默认组合：
+
+```text
+Prompt 最佳实践
+  + 结构化 NLPlan
+  + 本地 validator
+  + ReadinessPolicy 执行器
+  + 证据门禁
+  + Skill/Recipe 专用规则
+  + 低置信度追问
+```
+
+也就是说，prompt 是必要但不充分的；真正可靠性来自执行器和 validator。
+
+对“页面主区域还在转圈，但模型返回没数据”的具体处理应设为硬规则：
+
+```text
+只要 spinner/skeleton/loading 仍可见，或网络请求仍 pending，或主区域 DOM 未稳定：
+  禁止输出“没数据”
+  禁止生成已验证成功的 replay command
+  只能输出“仍在加载/超时未完成/需要重试”的状态
+```
+
+### 5. 是否 Fork 原工程
+
+建议 Fork，而且采用“混合策略”最合适。
+
+原因：
+
+- 原需求已经超出 AutoCLI 原作者当前产品边界：自然语言计划、私有模型接口、Skill 执行、安全策略、内网站点 recipe、生成后验证，都不一定符合上游项目方向。
+- 如果直接在原工程做大改，PR 很可能因为范围过大、产品理念不同、维护成本高而难以合并。
+- 内网运维系统的安全策略和 TechMP recipe 不适合进入公共上游。
+
+推荐策略：
+
+1. Fork AutoCLI 作为加强版研发主线，保证可以快速演进。
+2. 将通用且低争议的小修拆成上游 PR：
+   - `generate --site` 生效。
+   - URL 模板保留端口。
+   - 补充单元测试。
+   - `generate --print/--output` 这类通用能力。
+3. 将高争议或内部相关能力留在 fork：
+   - OpenAI-compatible 私有 LLM provider。
+   - `nl plan/run`。
+   - Skill parser。
+   - TechMP recipe。
+   - 内网数据脱敏策略。
+4. 尽量把增强能力做成新 crate 或 plugin 层，减少对原核心的侵入，降低后续 rebase 成本。
+5. 定期从 upstream 合并 bugfix，而不是长期完全脱钩。
+
+可选形态对比：
+
+| 形态 | 优点 | 缺点 | 建议 |
+| :--- | :--- | :--- | :--- |
+| 只做 wrapper CLI | 不改上游，启动快 | 很难修复 `generate --site`、CDP 捕获、pipeline 内部问题 | 适合 PoC，不适合长期 |
+| 直接 Fork 深改 | 控制力强，最快满足内部需求 | 与上游分叉风险高 | 适合 MVP 和内部落地 |
+| Fork + 上游小 PR + 新 crate/plugin | 兼顾控制力和可维护性 | 工程组织更复杂 | 推荐 |
+| 从零重写 | 架构最自由 | 成本高，浪费 AutoCLI 现有底座 | 暂不建议 |
+
+最终建议：先 Fork，并命名为内部加强版；第一阶段保留上游 remote，完成 P0/P1 通用修复和 P2/P3 架构雏形；能上游的修复单独 PR，不能上游的能力留在 fork 或本项目私有 plugin。
