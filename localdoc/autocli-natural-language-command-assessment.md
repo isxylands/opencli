@@ -986,6 +986,7 @@ AutoCLI 现有架构有 adapter、动态 CLI、browser pipeline、explore/synthe
 ```text
 initial_delay_ms
 max_wait_ms
+soft_timeout_ms
 poll_interval_ms
 network_quiet_ms
 dom_stable_samples
@@ -1006,6 +1007,47 @@ min_rows
 4. 等待主区域稳定：主区域文本长度、表格行数、关键 DOM hash 连续 N 次采样不变。
 5. 若看到空状态，只能在 1-4 都满足后才允许输出“暂无数据”。
 6. 若超过超时仍未稳定，输出“页面加载未完成/疑似卡住”，而不是输出“没数据”。
+
+慢页面也不能无限等待。建议把等待拆成两层：
+
+- `soft_timeout_ms`：超过正常合理范围后暂停并返回“目标系统响应较慢，当前仍未满足页面就绪条件”，在交互模式下询问用户是否继续等待。
+- `max_wait_ms`：绝对上限，超过后强制停止本轮动作，输出超时证据和建议，不继续自动等待。
+
+示例策略：
+
+```text
+shallow inspect:
+  soft_timeout_ms = 15000
+  max_wait_ms = 30000
+
+deep inspect:
+  soft_timeout_ms = 30000
+  max_wait_ms = 90000
+
+known slow internal system:
+  soft_timeout_ms = 45000
+  max_wait_ms = 180000
+```
+
+交互模式下，超过 `soft_timeout_ms` 时可以提示：
+
+```text
+目标系统响应较慢，已等待 30 秒，但页面仍在加载或接口仍未稳定。是否继续等待 60 秒？
+```
+
+非交互模式下不能询问用户，应按策略退出并返回机器可读状态：
+
+```json
+{
+  "status": "timeout_soft_or_hard",
+  "ready": false,
+  "reason": "spinner_visible_or_network_pending",
+  "waited_ms": 30000,
+  "suggestion": "rerun with --wait-extra 60 or check target system latency"
+}
+```
+
+这样可以同时避免两种错误：过早把 loading 判成“没数据”，以及在目标系统异常时无限挂起 CLI。
 
 优点：最可靠，能系统性解决慢页面误判。
 
@@ -1123,7 +1165,7 @@ Prompt 最佳实践
 只要 spinner/skeleton/loading 仍可见，或网络请求仍 pending，或主区域 DOM 未稳定：
   禁止输出“没数据”
   禁止生成已验证成功的 replay command
-  只能输出“仍在加载/超时未完成/需要重试”的状态
+  只能输出“仍在加载/超时未完成/是否继续等待/需要重试”的状态
 ```
 
 ### 5. 是否 Fork 原工程
@@ -1163,3 +1205,150 @@ Prompt 最佳实践
 | 从零重写 | 架构最自由 | 成本高，浪费 AutoCLI 现有底座 | 暂不建议 |
 
 最终建议：先 Fork，并命名为内部加强版；第一阶段保留上游 remote，完成 P0/P1 通用修复和 P2/P3 架构雏形；能上游的修复单独 PR，不能上游的能力留在 fork 或本项目私有 plugin。
+
+### 6. 适合作为上游通用修复 PR 的内容
+
+本节只列适合提交给 AutoCLI 上游的通用修复，不包含 TechMP 私有能力、内网 recipe、私有化安全策略和完整自然语言 Agent。
+
+#### 最新代码复核
+
+已执行：
+
+```bash
+git fetch origin --prune
+git rev-parse HEAD origin/main origin/HEAD
+git diff --stat HEAD..origin/main
+cargo test -p autocli-pipeline steps::download::tests::test_download_with_url_in_data
+```
+
+复核结果：
+
+- `HEAD`、`origin/main`、`origin/HEAD` 均为 `c0969e2c83b29a7528452b1ba555085deca8e00d`，即 `v0.3.8`，远端主线当前没有新提交。
+- `git diff --stat HEAD..origin/main` 为空，本地与最新远端主线一致。
+- `generate --site` 未修复：`crates/autocli-cli/src/main.rs:885` 仍读取为 `_site`，后续规则生成与 AI 生成都未传入。
+- AI 生成仍固定走 AutoCLI 服务端：`crates/autocli-ai/src/llm.rs:1-3` 注释仍说明请求通过 AutoCLI server API，`crates/autocli-ai/src/llm.rs:19` 仍拼接 `{api_base}/api/ai/generate-adapter`。
+- URL 模板丢端口未修复：`crates/autocli-ai/src/synthesize.rs:264-269` 仍用 `parsed.host_str()` 拼接 base URL。
+- download 单测失败仍可复现：`steps::download::tests::test_download_with_url_in_data` 仍失败，`download_url` 实际为 `Null`。
+
+因此，下面这些 PR 不是重复劳动，仍有提交价值。
+
+#### PR 1：让 `generate --site` 真正生效
+
+问题：
+
+- CLI 有 `--site` 参数，但只读成 `_site`。
+- 规则生成路径调用 `autocli_ai::generate(page, url, goal)`，没有携带 site override。
+- AI 生成路径调用 `generate_with_ai(page, url, goal, token)`，也没有携带 site override。
+
+建议范围：
+
+- CLI `generate` 改用 `GenerateOptions` 或新增带 options 的生成函数。
+- `generate_with_ai()` 增加 `site_override`。
+- `GenerateResult.selected_command` 优先使用 override site。
+- 增加单测覆盖 IP host、`--site techmp`、AI/non-AI 两条路径。
+
+上游可接受度：高。它是已有 CLI 参数未生效的 bugfix。
+
+#### PR 2：修复 URL 模板生成丢端口
+
+问题：
+
+- `build_templated_url()` 用 `host_str()` 拼 base，导致非默认端口丢失。
+- 内网、测试环境、自托管服务常用非默认端口，生成 adapter 后无法重放。
+
+建议范围：
+
+- 使用 `parsed.origin().ascii_serialization()` 或等价方法保留 scheme、host、port。
+- 保留现有 query 参数模板化逻辑。
+- 增加单测：
+  - `http://192.168.211.115:90/path/list`
+  - `http://localhost:5173/api/list`
+  - `https://example.com:8443/api/list`
+  - 默认 `80/443` 不产生异常变化。
+
+上游可接受度：高。它是通用 URL correctness bugfix。
+
+#### PR 3：修复 `generate_full()` 的 selected command 站点名
+
+问题：
+
+- `generate_full()` 接收 `GenerateOptions.site`，但 selected command 仍通过 `detect_site_name(&opts.url)` 推导。
+- 即使合成候选使用了 override，摘要里的命令仍可能错误。
+
+建议范围：
+
+- `site` 优先顺序：`opts.site` -> selected candidate site -> URL detect。
+- 增加 `GenerateResult` 单测，确认 `selected_command` 使用 override。
+
+上游可接受度：高。属于结构化结果一致性修复。
+
+#### PR 4：修复 `download` 步骤从 data 读取 URL 的失败单测
+
+问题：
+
+- 最新主线中 `cargo test -p autocli-pipeline steps::download::tests::test_download_with_url_in_data` 失败。
+- 期望从当前 pipeline data 的 `url` 字段生成 `download_url`，实际为 `Null`。
+
+建议范围：
+
+- 修复 `DownloadStep` 的 data fallback 逻辑。
+- 保持 `params.url` 优先级高于 `data.url`。
+- 增加数组 item 或 map 后 data 的回归测试，避免 download 步骤在 pipeline 中断链。
+
+上游可接受度：高。已有单测失败，属于明确 bugfix。
+
+#### PR 5：增加 `generate --print` 和 `generate --output`
+
+问题：
+
+- 当前 `generate` 默认写入 `~/.autocli/adapters/<site>/<name>.yaml`。
+- 用户想先审查或放到临时目录时不方便。
+
+建议范围：
+
+- `--print`：只输出 YAML，不落盘。
+- `--output <path>`：写到指定文件或目录。
+- 与默认保存行为保持兼容。
+
+上游可接受度：中到高。属于通用 UX 改善，但不是严格 bugfix，可放在前几个 bugfix 之后。
+
+#### PR 6：为 AI 上传行为增加显式控制
+
+问题：
+
+- `generate --ai` 生成后会调用上传逻辑。
+- 对私有页面或企业内网页面，默认上传不够稳妥。
+
+建议范围：
+
+- 增加 `--no-upload`。
+- 或改成 `--upload` 显式上传，默认仅本地保存。这个改动可能破坏现有行为，需谨慎。
+- 至少在 AI 生成前提示将发送页面采集数据到 AutoCLI server。
+
+上游可接受度：中。涉及产品取舍，不应和 bugfix PR 混在一起。
+
+#### PR 7：增强网络捕获为可选 CDP recorder
+
+问题：
+
+- 当前 `Performance API + 二次 fetch` 对 POST、请求体、复杂异步交互不够。
+
+建议范围：
+
+- 先做可选 recorder，不替换现有逻辑。
+- 捕获 `requestWillBeSent`、`responseReceived`、`loadingFinished`、`getResponseBody`。
+- 非 GET 和疑似写接口只记录，不自动重放。
+
+上游可接受度：中到低。改动大，维护成本高，建议等小 PR 合并后再讨论。
+
+#### 不建议作为上游 PR 的内容
+
+以下更适合留在 fork 或私有 plugin：
+
+- `techmp-site-inspect` 和 TechMP 路由/接口 recipe。
+- 内网环境变量映射、凭据复用、CI/Stable/PRDemo 专用策略。
+- 完整 `nl plan/run` 自然语言 Agent。
+- 私有 LLM provider 和组织级脱敏策略。
+- 面向内部运维系统的等待阈值、截图命名、报告模板。
+
+这些能力并非没有价值，而是和上游 AutoCLI 当前产品边界差异较大，放进上游 PR 容易变成范围过大的长期争议。
